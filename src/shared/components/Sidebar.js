@@ -314,7 +314,8 @@ export default function Sidebar({ onClose }) {
               </span>
             </button>
 
-            {/* 9English */}
+            {/*
+            {/ 9English /}
             <a
               href="https://9english.net/"
               target="_blank"
@@ -330,6 +331,7 @@ export default function Sidebar({ onClose }) {
               </span>
               <span className="text-[13px] font-medium">9English</span>
             </a>
+            */}
 
             {/* Settings */}
             <Link
