@@ -1,0 +1,109 @@
+name: Sync Upstream Release
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream
+        run: |
+          git remote add upstream https://github.com/decolua/9router.git
+
+      - name: Fetch upstream
+        run: |
+          git fetch upstream master --tags
+
+      - name: Check latest upstream commit
+        id: upstream
+        shell: bash
+        run: |
+          SHA="$(git rev-parse upstream/master)"
+          MESSAGE="$(git log -1 --format=%s upstream/master)"
+
+          echo "Latest upstream commit:"
+          echo "SHA: $SHA"
+          echo "Message: $MESSAGE"
+
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "message=$MESSAGE" >> "$GITHUB_OUTPUT"
+
+          if [[ "$MESSAGE" =~ ^#\ v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip non-release commit
+        if: steps.upstream.outputs.is_release != 'true'
+        run: |
+          echo "Latest upstream commit is not a version release."
+          echo "Nothing to sync."
+
+      - name: Check whether release is already included
+        if: steps.upstream.outputs.is_release == 'true'
+        id: check
+        shell: bash
+        run: |
+          if git merge-base --is-ancestor upstream/master master; then
+            echo "already_synced=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream is already included in master."
+          else
+            echo "already_synced=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream contains commits not yet included in master."
+          fi
+
+      - name: Rebase custom changes onto upstream
+        if: |
+          steps.upstream.outputs.is_release == 'true' &&
+          steps.check.outputs.already_synced == 'false'
+        run: |
+          git rebase upstream/master
+
+      - name: Push rebased master
+        if: |
+          steps.upstream.outputs.is_release == 'true' &&
+          steps.check.outputs.already_synced == 'false'
+        run: |
+          git push --force-with-lease origin master
+
+      - name: Create issue on conflict
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "Upstream sync conflict: ${{ steps.upstream.outputs.message }}" \
+            --body "Automatic upstream sync failed.
+
+          Upstream commit:
+          ${{ steps.upstream.outputs.sha }}
+
+          Message:
+          ${{ steps.upstream.outputs.message }}
+
+          The automatic rebase encountered a conflict.
+          No force-push was performed.
+
+          Workflow:
+          ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
