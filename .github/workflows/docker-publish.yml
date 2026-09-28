@@ -3,6 +3,10 @@ name: Build and Push Docker Image
 on:
   workflow_dispatch:
 
+  push:
+    branches:
+      - master
+
 env:
   GHCR_IMAGE: ghcr.io/csd-1254/9router
   IMAGE_TAG: latest
