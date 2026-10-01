@@ -379,10 +379,16 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   reqLogger.logConvertedResponse(translatedResponse);
 
   const totalLatency = Date.now() - requestStartTime;
+  const endedAtIso = new Date().toISOString();
+  const startedAtIso = new Date(requestStartTime).toISOString();
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
+    startedAt: startedAtIso,
+    endedAt: endedAtIso,
+    durationMs: totalLatency,
     latency: { ttft: totalLatency, total: totalLatency },
     tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
+    clientRawRequest: clientRawRequest || null,
     request: extractRequestConfig(body, stream),
     providerRequest: finalBody || translatedBody || null,
     providerResponse: responseBody || null,

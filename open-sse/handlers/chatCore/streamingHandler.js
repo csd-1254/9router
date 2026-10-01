@@ -96,11 +96,30 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
+    startedAt: new Date(requestStartTime).toISOString(),
+    endedAt: new Date().toISOString(),
+    durationMs: Date.now() - requestStartTime,
     latency: { ttft: 0, total: Date.now() - requestStartTime },
     tokens: { prompt_tokens: 0, completion_tokens: 0 },
+    clientRawRequest: clientRawRequest || null,
     request: extractRequestConfig(body, stream),
     providerRequest: finalBody || translatedBody || null,
-    providerResponse: "[Streaming - raw response not captured]",
+    providerResponse: {
+      _streamed: true,
+      _format: "sse-json",
+      _stage: "provider_response",
+      summary: {
+        object: "chat.completion",
+        choices: [
+          {
+            message: { role: "assistant", content: "[Streaming in progress...]" },
+            finish_reason: null
+          }
+        ],
+        usage: { prompt_tokens: 0, completion_tokens: 0 },
+        _streamed: true
+      }
+    },
     response: { content: "[Streaming in progress...]", thinking: null, type: "streaming" },
     pxpipe,
     status: "success"
@@ -130,11 +149,34 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
 
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
+      startedAt: new Date(requestStartTime).toISOString(),
+      endedAt: new Date().toISOString(),
+      durationMs: latency.total,
       latency,
       tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
+      clientRawRequest: clientRawRequest || null,
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
-      providerResponse: safeContent,
+      providerResponse: {
+        _streamed: true,
+        _format: "sse-json",
+        _stage: "provider_response",
+        summary: {
+          object: "chat.completion",
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: safeContent,
+                ...(safeThinking ? { reasoning_content: safeThinking } : {})
+              },
+              finish_reason: "stop"
+            }
+          ],
+          usage: usage || { prompt_tokens: 0, completion_tokens: 0 },
+          _streamed: true
+        }
+      },
       response: { content: safeContent, thinking: safeThinking, type: "streaming" },
       pxpipe,
       status: "success"

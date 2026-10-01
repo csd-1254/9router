@@ -101,6 +101,7 @@ async function flushToDatabase() {
           if (!item.id) item.id = generateDetailId(item.model);
           if (!item.timestamp) item.timestamp = new Date().toISOString();
           if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
+          if (item.clientRawRequest?.headers) item.clientRawRequest = { ...item.clientRawRequest, headers: sanitizeHeaders(item.clientRawRequest.headers) };
 
           const record = {
             id: item.id,
@@ -108,9 +109,14 @@ async function flushToDatabase() {
             model: item.model || null,
             connectionId: item.connectionId || null,
             timestamp: item.timestamp,
+            startedAt: item.startedAt || item.timestamp,
+            endedAt: item.endedAt || null,
+            durationMs: item.durationMs ?? null,
+            requestedModel: item.requestedModel || null,
             status: item.status || null,
             latency: item.latency || {},
             tokens: item.tokens || {},
+            clientRawRequest: truncateField(item.clientRawRequest, config.maxJsonSize),
             request: truncateField(item.request, config.maxJsonSize),
             providerRequest: truncateField(item.providerRequest, config.maxJsonSize),
             providerResponse: truncateField(item.providerResponse, config.maxJsonSize),
@@ -181,10 +187,10 @@ export async function getRequestDetails(filter = {}) {
   const offset = (page - 1) * pageSize;
 
   const rows = db.all(
-    `SELECT data FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+    `SELECT id, data FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
     [...params, pageSize, offset]
   );
-  const details = rows.map((r) => parseJson(r.data, {}));
+  const details = rows.map((r) => ({ ...parseJson(r.data, {}), id: r.id }));
 
   return {
     details,
@@ -200,8 +206,8 @@ export async function getDistinctProviders() {
 
 export async function getRequestDetailById(id) {
   const db = await getAdapter();
-  const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
-  return row ? parseJson(row.data, null) : null;
+  const row = db.get(`SELECT id, data FROM requestDetails WHERE id = ?`, [id]);
+  return row ? { ...parseJson(row.data, null), id: row.id } : null;
 }
 
 const _shutdownHandler = async () => {
