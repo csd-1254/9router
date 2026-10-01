@@ -144,8 +144,19 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
       total: Date.now() - requestStartTime
     };
-    const safeContent = contentObj?.content || "[Empty streaming response]";
     const safeThinking = contentObj?.thinking || null;
+    const toolCalls = contentObj?.toolCalls?.length
+      ? contentObj.toolCalls.map((c, i) => ({
+          id: c.id || `call_${i}`,
+          type: "function",
+          function: { name: c.name || "", arguments: c.arguments || "" }
+        }))
+      : null;
+    // Fall back to a readable tool-call summary when there is no text content
+    // (tool-call-only responses) so the log never shows just a placeholder.
+    const safeContent = contentObj?.content
+      || (toolCalls ? toolCalls.map((c) => `[tool_call] ${c.function.name}(${c.function.arguments})`).join("\n") : "")
+      || "[Empty streaming response]";
 
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -168,7 +179,8 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
               message: {
                 role: "assistant",
                 content: safeContent,
-                ...(safeThinking ? { reasoning_content: safeThinking } : {})
+                ...(safeThinking ? { reasoning_content: safeThinking } : {}),
+                ...(toolCalls ? { tool_calls: toolCalls } : {})
               },
               finish_reason: "stop"
             }

@@ -77,6 +77,23 @@ export function createSSEStream(options = {}) {
   let totalContentLength = 0;
   let accumulatedContent = "";
   let accumulatedThinking = "";
+  // Tool-call-only responses (common with coding CLIs) carry no text delta, so
+  // accumulatedContent stays empty and the request log would show a useless
+  // "[Empty streaming response]". Reassemble streamed OpenAI tool_calls by index
+  // (name arrives first, arguments across many chunks) to surface them instead.
+  // ponytail: OpenAI-shape only; Claude tool_use / Gemini functionCall not captured — add if those providers show empty logs.
+  const toolCallAcc = new Map();
+  const captureToolCalls = (toolCalls) => {
+    if (!Array.isArray(toolCalls)) return;
+    for (const tc of toolCalls) {
+      const idx = tc.index ?? 0;
+      const cur = toolCallAcc.get(idx) || { id: null, name: "", arguments: "" };
+      if (tc.id) cur.id = tc.id;
+      if (tc.function?.name) cur.name = tc.function.name;
+      if (typeof tc.function?.arguments === "string") cur.arguments += tc.function.arguments;
+      toolCallAcc.set(idx, cur);
+    }
+  };
   let ttftAt = null;
   let sseLineCount = 0;
   let sseEmittedCount = 0;
@@ -114,7 +131,8 @@ export function createSSEStream(options = {}) {
     if (onStreamComplete) {
       onStreamComplete({
         content: accumulatedContent,
-        thinking: accumulatedThinking
+        thinking: accumulatedThinking,
+        toolCalls: toolCallAcc.size ? [...toolCallAcc.values()] : null
       }, finalUsage, ttftAt);
     }
   };
@@ -220,6 +238,7 @@ export function createSSEStream(options = {}) {
                 totalContentLength += reasoning.length;
                 accumulatedThinking += reasoning;
               }
+              captureToolCalls(delta?.tool_calls);
 
               const extracted = extractUsage(parsed);
               if (extracted) {
@@ -335,6 +354,7 @@ export function createSSEStream(options = {}) {
           totalContentLength += parsed.choices[0].delta.reasoning_content.length;
           accumulatedThinking += parsed.choices[0].delta.reasoning_content;
         }
+        captureToolCalls(parsed.choices?.[0]?.delta?.tool_calls);
         
         // Gemini format
         if (parsed.candidates?.[0]?.content?.parts) {
