@@ -275,9 +275,11 @@ export function getComboModelsFromData(modelStr, combosData) {
  * @param {string} [options.comboName] - Name of the combo (for round-robin tracking)
  * @param {string} [options.comboStrategy] - Strategy: "fallback" or "round-robin"
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
+ * @param {boolean} [options.retryOnClientError=true] - Keep trying later models after a
+ *   request-scoped 4xx instead of handing that error straight back to the client
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, retryOnClientError = true }) {
   // Apply rotation strategy if enabled
   let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
 
@@ -296,6 +298,10 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
   let lastError = null;
   let earliestRetryAfter = null;
   let lastStatus = null;
+  // First request-scoped 4xx seen in the chain. Held back instead of returned so a
+  // later model still gets a chance to answer; handed to the client only if every
+  // model fails, which keeps the real upstream message alive.
+  let clientErrorResult = null;
 
   for (let i = 0; i < rotatedModels.length; i++) {
     const modelStr = rotatedModels[i];
@@ -334,9 +340,22 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       // Check if should fallback to next model
       const { shouldFallback, cooldownMs } = checkFallbackError(result.status, errorText);
 
+      // checkFallbackError answers "should this failure cool the ACCOUNT down?" — it
+      // says no for a request-scoped 4xx, so one bad body never locks a healthy
+      // credential. The combo loop is asking something else: "would another model
+      // help?". Combo members are usually different providers behind their own
+      // translator, so a 4xx from one (e.g. a relay answering "we got a bad response
+      // from the source") says nothing about the next. Keep trying and remember the
+      // first one, rather than aborting the whole combo on the first model's 4xx.
       if (!shouldFallback) {
-        log.warn("COMBO", `Model ${modelStr} failed (no fallback)`, { status: result.status });
-        return result;
+        const hasNextModel = i + 1 < rotatedModels.length;
+        if (!retryOnClientError || !hasNextModel) {
+          log.warn("COMBO", `Model ${modelStr} failed (no fallback)`, { status: result.status });
+          return result;
+        }
+        log.warn("COMBO", `Model ${modelStr} client error (${result.status}), trying next`, { status: result.status });
+        if (!clientErrorResult) clientErrorResult = result;
+        continue;
       }
 
       // For transient errors (503/502/504), wait for cooldown before falling through
@@ -358,6 +377,14 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       if (!lastStatus) lastStatus = 500;
       log.warn("COMBO", `Model ${modelStr} threw error, trying next`, { error: lastError });
     }
+  }
+
+  // All models failed. A 4xx collected mid-chain is a real answer from an upstream
+  // and carries the message the caller needs; the synthesized 503 below would replace
+  // it with a generic "all combo models unavailable". Prefer the real error.
+  if (clientErrorResult) {
+    log.warn("COMBO", `All models failed; returning first client error (${clientErrorResult.status})`);
+    return clientErrorResult;
   }
 
   // All models failed

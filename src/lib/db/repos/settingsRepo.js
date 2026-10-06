@@ -17,6 +17,9 @@ const DEFAULT_SETTINGS = {
   comboStrategy: "fallback",
   comboStickyRoundRobinLimit: 1,
   comboStrategies: {},
+  // A 4xx from one combo member is provider-scoped, so keep trying later models
+  // instead of returning that error to the client. See open-sse/services/combo.js.
+  comboRetryOnClientError: true,
   capacityAdapter: {
     vision: { enabled: true, roundRobin: false, models: [] },
     pdf: { enabled: false, roundRobin: false, models: [] },
