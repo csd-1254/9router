@@ -65,6 +65,8 @@ export {
 // Request details
 export {
   saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
+  getDistinctModels, getDistinctStatuses,
+  getRequestDetailsStats, clearRequestDetails, deleteRequestDetailsBefore,
 } from "./repos/requestDetailsRepo.js";
 
 // Export/import full DB

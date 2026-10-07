@@ -80,21 +80,26 @@ describe("handleComboChat — request-scoped 4xx handling", () => {
     expect(handleSingleModel).toHaveBeenCalledTimes(2);
   });
 
-  it("returns the 4xx immediately when retryOnClientError is disabled", async () => {
-    const handleSingleModel = vi.fn(async () => badRequestResponse("no retry wanted"));
+  it("always retries the next model on 4xx — the old opt-out is ignored", async () => {
+    const handleSingleModel = vi.fn(async (body, modelStr) =>
+      modelStr === "deepseek-v4-flash"
+        ? badRequestResponse("first model, bad request")
+        : jsonResponse(200, { choices: [{ message: { role: "assistant", content: "second model answered" } }] })
+    );
 
     const response = await handleComboChat({
       body: { messages: [{ role: "user", content: "Hello" }] },
       models: ["deepseek-v4-flash", "openai/gpt-4o-mini"],
       handleSingleModel,
       log,
-      comboName: "test-4xx-disabled",
+      comboName: "test-4xx-always",
       comboStrategy: "fallback",
+      // Legacy flag: no longer read. 4xx retry is unconditional.
       retryOnClientError: false,
     });
 
-    expect(response.status).toBe(400);
-    expect(handleSingleModel).toHaveBeenCalledTimes(1);
+    expect(response.ok).toBe(true);
+    expect(handleSingleModel).toHaveBeenCalledTimes(2);
   });
 
   it("does not consume a retry slot for a 4xx on the last model", async () => {

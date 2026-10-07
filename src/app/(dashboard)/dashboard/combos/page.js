@@ -309,14 +309,16 @@ export default function CombosPage() {
   };
 
   // Merge a per-combo strategy patch into settings.comboStrategies. An entry is kept
-  // only while it differs from code defaults: a non-default strategy, or 4xx retry
-  // explicitly turned off (default is on). Returning to plain defaults drops it.
+  // only while it differs from code defaults (a non-default strategy). Returning to
+  // plain defaults drops it.
   const handleSetComboStrategy = async (comboName, patch) => {
     try {
       const updated = { ...comboStrategies };
       const next = { ...(updated[comboName] || {}), ...patch };
+      // 4xx retry is always on now; drop the legacy per-combo field so it can't linger.
+      delete next.retryOnClientError;
       const isDefaultFallback = !next.fallbackStrategy || next.fallbackStrategy === "fallback";
-      if (isDefaultFallback && next.retryOnClientError !== false) {
+      if (isDefaultFallback) {
         delete updated[comboName];
       } else {
         updated[comboName] = next;
@@ -568,8 +570,6 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
-  // Default is on: keep trying later models after a provider-scoped 4xx.
-  const retryOnClientError = strategy.retryOnClientError !== false;
   const isFusion = current === "fusion";
   // The synced catalog is server-only, so resolving here would fall back to the
   // generic patterns and under-report the limits. getCaps carries the server's
@@ -649,22 +649,6 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
 
         {/* Actions */}
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3 sm:shrink-0">
-          {/* Request-error fallback: a 4xx from one member is provider-scoped, so other
-              members still get a turn. Fusion runs all members anyway — not applicable. */}
-          {!isFusion && (
-            <label
-              className="flex items-center gap-1.5 text-xs text-text-muted cursor-pointer select-none"
-              title="When a member answers 4xx (bad request, provider-side error), try the next model instead of returning that error to the client"
-            >
-              <Toggle
-                checked={retryOnClientError}
-                onChange={(v) => onSetStrategy({ retryOnClientError: v })}
-                aria-label={`Retry next model on 4xx for ${combo.name}`}
-              />
-              <span>4xx retry</span>
-            </label>
-          )}
-
           {/* Strategy selector — always visible */}
           <div className="w-full sm:w-[200px]">
             <Select

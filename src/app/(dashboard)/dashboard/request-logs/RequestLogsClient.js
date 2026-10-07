@@ -1,16 +1,20 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Card, Button } from "@/shared/components";
+import { Card, Button, ConfirmModal } from "@/shared/components";
 import Pagination from "@/shared/components/Pagination";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 import RequestLogDetailModal from "./RequestLogDetailModal";
 
-const REFRESH_MS = 1000;
+const REFRESH_MS = 5000;
+const TIME_PRESETS = [
+  { label: "All time", value: "all" },
+  { label: "Last 24h", value: "1" },
+  { label: "Last 3 days", value: "3" },
+  { label: "Last 7 days", value: "7" },
+  { label: "Last 30 days", value: "30" },
+];
 
-// Resolve a provider id to its display name, matching the Usage → Details tab.
-// Custom/compatible nodes carry their name in /api/provider-nodes; built-ins
-// come from AI_PROVIDERS. Cached module-wide so repeated polls don't refetch.
 let providerNameCache = null;
 async function loadProviderNames() {
   if (providerNameCache) return providerNameCache;
@@ -28,7 +32,7 @@ function providerName(id, cache) {
 }
 
 function formatDuration(ms) {
-  if (ms === null || ms === undefined) return "-";
+  if (ms == null) return "-";
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
 }
@@ -48,14 +52,38 @@ export default function RequestLogsClient() {
   const [selectedLogId, setSelectedLogId] = useState(null);
   const [nameCache, setNameCache] = useState(null);
   const [pagination, setPagination] = useState({ page: 1, pageSize: 20, totalItems: 0, totalPages: 1 });
+  const [stats, setStats] = useState(null);
+  const [filterOptions, setFilterOptions] = useState({ providers: [], models: [], statuses: [] });
+
+  // Filter state
+  const [timePreset, setTimePreset] = useState("all");
+  const [filterProvider, setFilterProvider] = useState("");
+  const [filterModel, setFilterModel] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [clearing, setClearing] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const { page, pageSize } = pagination;
+
+  const buildFilterParams = useCallback(() => {
+    const params = new URLSearchParams();
+    params.set("page", page);
+    params.set("pageSize", pageSize);
+    if (timePreset !== "all") {
+      const days = parseInt(timePreset, 10);
+      params.set("startDate", new Date(Date.now() - days * 86400000).toISOString());
+    }
+    if (filterProvider) params.set("provider", filterProvider);
+    if (filterModel) params.set("model", filterModel);
+    if (filterStatus) params.set("status", filterStatus);
+    return params.toString();
+  }, [page, pageSize, timePreset, filterProvider, filterModel, filterStatus]);
 
   const fetchLogs = useCallback(async (showLoading = true) => {
     if (showLoading) setLoading(true);
     setLoadError(null);
     try {
-      const res = await fetch(`/api/usage/request-details?page=${page}&pageSize=${pageSize}`);
+      const res = await fetch(`/api/usage/request-details?${buildFilterParams()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setLogs(data.details || []);
@@ -66,7 +94,25 @@ export default function RequestLogsClient() {
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, [page, pageSize]);
+  }, [buildFilterParams]);
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const res = await fetch("/api/usage/request-details/filters");
+      if (!res.ok) return;
+      const data = await res.json();
+      setFilterOptions({
+        providers: data.providers || [],
+        models: data.models || [],
+        statuses: data.statuses || [],
+      });
+      const statsRes = await fetch("/api/usage/request-details?page=1&pageSize=1");
+      if (statsRes.ok) {
+        const statsData = await statsRes.json();
+        setStats(statsData.pagination);
+      }
+    } catch {}
+  }, []);
 
   useEffect(() => {
     loadProviderNames().then(setNameCache).catch(() => {});
@@ -75,22 +121,133 @@ export default function RequestLogsClient() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchLogs(true);
-  }, [fetchLogs]);
+    fetchStats();
+  }, [fetchLogs, fetchStats]);
 
-  // Live tail: always-on silent polling (no toggle), matching the other
-  // dashboards. Data has a short write-buffer floor, so SSE would gain nothing.
-  // Keeps polling with the detail modal open — it's an overlay fetched by id,
-  // unaffected by the list reshuffling.
+  // Live tail — silent polling keeps data fresh even with detail modal open
   useEffect(() => {
     const interval = setInterval(() => fetchLogs(false), REFRESH_MS);
     return () => clearInterval(interval);
   }, [fetchLogs]);
 
-  const setPage = (p) => setPagination((prev) => ({ ...prev, page: p }));
-  const setPageSize = (s) => setPagination((prev) => ({ ...prev, pageSize: s, page: 1 }));
+  const resetFilters = () => {
+    setTimePreset("all");
+    setFilterProvider("");
+    setFilterModel("");
+    setFilterStatus("");
+    setPagination((prev) => ({ ...prev, page: 1 }));
+  };
+
+  const handleClearAll = async () => {
+    setClearing(true);
+    try {
+      await fetch("/api/usage/request-details", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "all" }),
+      });
+      setShowClearConfirm(false);
+      await fetchLogs(true);
+      await fetchStats();
+    } catch {} finally {
+      setClearing(false);
+    }
+  };
 
   return (
-    <div className="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
+    <div className="flex min-w-0 flex-col gap-4 px-1 sm:px-0">
+      {/* Filter bar */}
+      <Card>
+        <div className="flex flex-wrap items-center gap-3 p-4">
+          {/* Time presets */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-sm text-text-muted whitespace-nowrap">Time:</span>
+            <div className="flex gap-1">
+              {TIME_PRESETS.map((p) => (
+                <button
+                  key={p.value}
+                  onClick={() => { setTimePreset(p.value); setPagination((prev) => ({ ...prev, page: 1 })); }}
+                  className={`px-2.5 py-1 text-xs rounded-md border transition-colors ${
+                    timePreset === p.value
+                      ? "border-primary bg-primary/10 text-primary font-medium"
+                      : "border-border text-text-muted hover:border-primary/40 hover:text-text-main"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="w-px h-6 bg-border self-center" />
+
+          {/* Dropdown filters */}
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={filterStatus}
+              onChange={(e) => { setFilterStatus(e.target.value); setPagination((prev) => ({ ...prev, page: 1 })); }}
+              className="h-8 px-2 rounded-lg border border-black/10 dark:border-white/10 bg-surface text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20 cursor-pointer"
+              style={{ colorScheme: "auto" }}
+            >
+              <option value="">All statuses</option>
+              {filterOptions.statuses.map((s) => (
+                <option key={s} value={s}>{s || "-"}</option>
+              ))}
+            </select>
+
+            <select
+              value={filterProvider}
+              onChange={(e) => { setFilterProvider(e.target.value); setPagination((prev) => ({ ...prev, page: 1 })); }}
+              className="h-8 px-2 rounded-lg border border-black/10 dark:border-white/10 bg-surface text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20 cursor-pointer"
+              style={{ colorScheme: "auto" }}
+            >
+              <option value="">All providers</option>
+              {filterOptions.providers.map((p) => (
+                <option key={p} value={p}>{providerName(p, nameCache)}</option>
+              ))}
+            </select>
+
+            <select
+              value={filterModel}
+              onChange={(e) => { setFilterModel(e.target.value); setPagination((prev) => ({ ...prev, page: 1 })); }}
+              className="h-8 px-2 rounded-lg border border-black/10 dark:border-white/10 bg-surface text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20 cursor-pointer"
+              style={{ colorScheme: "auto" }}
+            >
+              <option value="">All models</option>
+              {filterOptions.models.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Actions */}
+          <div className="ml-auto flex items-center gap-2">
+            {(timePreset !== "all" || filterProvider || filterModel || filterStatus) && (
+              <Button size="sm" variant="ghost" onClick={resetFilters} className="text-xs">
+                Clear filters
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowClearConfirm(true)}
+              disabled={!stats || stats.totalItems === 0}
+              className="text-xs text-error border-error/40 hover:bg-error/10"
+            >
+              Clear logs
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      {/* Stats row */}
+      {stats && (
+        <div className="flex gap-4 text-xs text-text-muted px-1">
+          <span><span className="font-medium text-text-main">{stats.totalItems}</span> records</span>
+          <span>Page {stats.page} / {stats.totalPages}</span>
+        </div>
+      )}
+
       {/* Table */}
       <Card padding="none">
         <div className="overflow-x-auto">
@@ -106,8 +263,8 @@ export default function RequestLogsClient() {
             </div>
           ) : logs.length === 0 ? (
             <div className="p-8 text-center text-text-muted">
-              <div className="mb-1">No request logs yet.</div>
-              <div className="text-xs opacity-70">Generate a request through 9Router and it will appear here.</div>
+              <div className="mb-1">No request logs found.</div>
+              <div className="text-xs opacity-70">Try adjusting your filters or generate a request through 9Router.</div>
             </div>
           ) : (
             <table className="w-full min-w-[880px]">
@@ -170,8 +327,8 @@ export default function RequestLogsClient() {
               currentPage={page}
               pageSize={pageSize}
               totalItems={pagination.totalItems}
-              onPageChange={setPage}
-              onPageSizeChange={setPageSize}
+              onPageChange={(p) => setPagination((prev) => ({ ...prev, page: p }))}
+              onPageSizeChange={(s) => setPagination((prev) => ({ ...prev, pageSize: s, page: 1 }))}
             />
           </div>
         )}
@@ -180,6 +337,17 @@ export default function RequestLogsClient() {
       {selectedLogId && (
         <RequestLogDetailModal logId={selectedLogId} onClose={() => setSelectedLogId(null)} />
       )}
+
+      <ConfirmModal
+        isOpen={showClearConfirm}
+        onClose={() => setShowClearConfirm(false)}
+        onConfirm={handleClearAll}
+        title="Clear all request logs?"
+        message={`This will permanently delete all ${stats?.totalItems ?? 0} request log records. This action cannot be undone.`}
+        confirmText="Clear all"
+        variant="danger"
+        loading={clearing}
+      />
     </div>
   );
 }

@@ -204,6 +204,18 @@ export async function getDistinctProviders() {
   return rows.map((r) => r.provider);
 }
 
+export async function getDistinctModels() {
+  const db = await getAdapter();
+  const rows = db.all(`SELECT DISTINCT model FROM requestDetails WHERE model IS NOT NULL ORDER BY model ASC`);
+  return rows.map((r) => r.model);
+}
+
+export async function getDistinctStatuses() {
+  const db = await getAdapter();
+  const rows = db.all(`SELECT DISTINCT status FROM requestDetails WHERE status IS NOT NULL ORDER BY status ASC`);
+  return rows.map((r) => r.status);
+}
+
 export async function getRequestDetailById(id) {
   const db = await getAdapter();
   const row = db.get(`SELECT id, data FROM requestDetails WHERE id = ?`, [id]);
@@ -228,3 +240,78 @@ function ensureShutdownHandler() {
 }
 
 ensureShutdownHandler();
+
+// --- Auto-cleanup & manual clear ---
+
+let cleanupTimer = null;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
+export async function getRequestDetailsStats() {
+  const db = await getAdapter();
+  const row = db.get(`SELECT COUNT(*) as total, MIN(timestamp) as oldest, MAX(timestamp) as newest FROM requestDetails`);
+  return {
+    total: row?.total ?? 0,
+    oldest: row?.oldest ?? null,
+    newest: row?.newest ?? null,
+  };
+}
+
+export async function deleteRequestDetailsBefore(cutoffDate) {
+  const db = await getAdapter();
+  const cutoff = new Date(cutoffDate).toISOString();
+  const before = db.get(`SELECT COUNT(*) as c FROM requestDetails WHERE timestamp < ?`, [cutoff]);
+  const deletedCount = before?.c ?? 0;
+  if (deletedCount > 0) {
+    db.run(`DELETE FROM requestDetails WHERE timestamp < ?`, [cutoff]);
+  }
+  return deletedCount;
+}
+
+export async function clearRequestDetails() {
+  const db = await getAdapter();
+  const before = db.get(`SELECT COUNT(*) as c FROM requestDetails`);
+  const deletedCount = before?.c ?? 0;
+  if (deletedCount > 0) {
+    db.run(`DELETE FROM requestDetails`);
+  }
+  return deletedCount;
+}
+
+async function runCleanup() {
+  try {
+    const { getSettings } = await import("./settingsRepo.js");
+    const settings = await getSettings();
+    const retentionDays = settings.requestLogsRetentionDays ?? 0;
+    if (retentionDays > 0) {
+      const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+      const deleted = await deleteRequestDetailsBefore(cutoff);
+      if (deleted > 0) {
+        console.log(`[requestDetailsRepo] Auto-cleared ${deleted} request logs older than ${retentionDays} days`);
+      }
+    }
+  } catch (e) {
+    console.warn("[requestDetailsRepo] Auto-cleanup failed:", e.message);
+  }
+}
+
+let cleanupScheduled = false;
+function scheduleCleanup() {
+  if (cleanupScheduled) return;
+  cleanupScheduled = true;
+  runCleanup().catch(() => {});
+  cleanupTimer = setInterval(() => {
+    runCleanup().catch(() => {});
+  }, CLEANUP_INTERVAL_MS);
+}
+
+function clearScheduledCleanup() {
+  if (cleanupTimer) {
+    clearInterval(cleanupTimer);
+    cleanupTimer = null;
+  }
+  cleanupScheduled = false;
+}
+
+// Run cleanup on startup, then schedule periodic
+runCleanup().catch(() => {});
+scheduleCleanup();

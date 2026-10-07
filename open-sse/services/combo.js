@@ -275,11 +275,9 @@ export function getComboModelsFromData(modelStr, combosData) {
  * @param {string} [options.comboName] - Name of the combo (for round-robin tracking)
  * @param {string} [options.comboStrategy] - Strategy: "fallback" or "round-robin"
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
- * @param {boolean} [options.retryOnClientError=true] - Keep trying later models after a
- *   request-scoped 4xx instead of handing that error straight back to the client
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, retryOnClientError = true }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true }) {
   // Apply rotation strategy if enabled
   let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
 
@@ -349,7 +347,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       // first one, rather than aborting the whole combo on the first model's 4xx.
       if (!shouldFallback) {
         const hasNextModel = i + 1 < rotatedModels.length;
-        if (!retryOnClientError || !hasNextModel) {
+        if (!hasNextModel) {
           log.warn("COMBO", `Model ${modelStr} failed (no fallback)`, { status: result.status });
           return result;
         }
